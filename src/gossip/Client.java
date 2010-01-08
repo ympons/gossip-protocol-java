@@ -42,6 +42,12 @@ public class Client implements NotificationListener {
 
 	private Member me;
 
+	/**
+	 * Setup the client's lists, gossiping parameters, and parse the startup config file.
+	 * @throws SocketException
+	 * @throws InterruptedException
+	 * @throws UnknownHostException
+	 */
 	public Client() throws SocketException, InterruptedException, UnknownHostException {
 
 		Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
@@ -67,11 +73,13 @@ public class Client implements NotificationListener {
 
 		ArrayList<String> startupHostsList = parseStartupMembers();
 
+		// loop over the initial hosts, and find ourselves
 		for (String host : startupHostsList) {
 
-			Member member = new Member(host, 0, this);
+			Member member = new Member(host, 0, this, t_cleanup);
 
 			if(host.contains(myIpAddress)) {
+				// save our own Member class so we can increment our heartbeat later
 				me = member;
 				port = Integer.parseInt(host.split(":")[1]);
 				this.myAddress = myIpAddress + ":" + port;
@@ -87,15 +95,22 @@ public class Client implements NotificationListener {
 		}
 
 		if(port != 0) {
-
+			// TODO: starting the server could probably be moved to the constructor
+			// of the receiver thread.
 			server = new DatagramSocket(port);
 		}
 		else {
-			System.out.println("Could not find myself in startup list");
+			// This is bad, so no need proceeding on
+			System.err.println("Could not find myself in startup list");
+			System.exit(-1);
 		}
-		//		TimeUnit.SECONDS.sleep(4);
 	}
 
+	/**
+	 * In order to have some membership lists at startup, we read the IP addresses
+	 * and port at a newline delimited config file.
+	 * @return List of <IP address:port> Strings
+	 */
 	private ArrayList<String> parseStartupMembers() {
 		ArrayList<String> startupHostsList = new ArrayList<String>();
 		File startupConfig = new File("config","startup_members");
@@ -116,13 +131,16 @@ public class Client implements NotificationListener {
 		return startupHostsList;
 	}
 
+	/**
+	 * Performs the sending of the membership list, after we have
+	 * incremented our own heartbeat.
+	 */
 	private void sendMembershipList() {
 
 		this.me.setHeartbeat(me.getHeartbeat() + 1);
 
 		synchronized (this.memberList) {
 			try {
-				DatagramSocket socket = new DatagramSocket();
 				Member member = getRandomMember();
 
 				if(member != null) {
@@ -144,13 +162,14 @@ public class Client implements NotificationListener {
 						System.out.println(m);
 					}
 					System.out.println("---------------------");
-
-					DatagramPacket datagramPacket = new DatagramPacket(buf, buf.length, dest, port);
-
-					//simulate some packet loss
+					
+					//simulate some packet loss ~25%
 					int percentToSend = random.nextInt(100);
 					if(percentToSend > 25) {
+						DatagramSocket socket = new DatagramSocket();
+						DatagramPacket datagramPacket = new DatagramPacket(buf, buf.length, dest, port);
 						socket.send(datagramPacket);
+						socket.close();
 					}
 				}
 
@@ -160,6 +179,14 @@ public class Client implements NotificationListener {
 		}
 	}
 
+	/**
+	 * Find a random peer from the local membership list.
+	 * Ensure that we do not select ourselves, and keep
+	 * trying 10 times if we do.  Therefore, in the case 
+	 * where this client is the only member in the list, 
+	 * this method will return null
+	 * @return Member random member if list is greater than 1, null otherwise
+	 */
 	private Member getRandomMember() {
 		Member member = null;
 
@@ -181,6 +208,12 @@ public class Client implements NotificationListener {
 		return member;
 	}
 
+	/**
+	 * The class handles gossiping the membership list.
+	 * This information is important to maintaining a common
+	 * state among all the nodes, and is important for detecting
+	 * failures.
+	 */
 	private class MembershipGossiper implements Runnable {
 
 		private AtomicBoolean keepRunning;
@@ -208,6 +241,13 @@ public class Client implements NotificationListener {
 
 	}
 
+	/**
+	 * This class handles the passive cycle, where this client
+	 * has received an incoming message.  For now, this message
+	 * is always the membership list, but if you choose to gossip
+	 * additional information, you will need some logic to determine
+	 * the incoming message.
+	 */
 	private class AsychronousReceiver implements Runnable {
 
 		private AtomicBoolean keepRunning;
@@ -239,6 +279,7 @@ public class Client implements NotificationListener {
 						for (Member member : list) {
 							System.out.println(member);
 						}
+						// Merge our list with the one we just received
 						mergeLists(list);
 					}
 
@@ -252,6 +293,14 @@ public class Client implements NotificationListener {
 			}
 		}
 
+		/**
+		 * Merge remote list (received from peer), and our local member list.
+		 * Simply, we must update the heartbeats that the remote list has with
+		 * our list.  Also, some additional logic is needed to make sure we have 
+		 * not timed out a member and then immediately received a list with that 
+		 * member.
+		 * @param remoteList
+		 */
 		private void mergeLists(ArrayList<Member> remoteList) {
 
 			synchronized (Client.this.deadList) {
@@ -280,14 +329,14 @@ public class Client implements NotificationListener {
 								if(remoteMember.getHeartbeat() > localDeadMember.getHeartbeat()) {
 									// it's baa-aack
 									Client.this.deadList.remove(localDeadMember);
-									Member newLocalMember = new Member(remoteMember.getAddress(), remoteMember.getHeartbeat(), Client.this);
+									Member newLocalMember = new Member(remoteMember.getAddress(), remoteMember.getHeartbeat(), Client.this, t_cleanup);
 									Client.this.memberList.add(newLocalMember);
 									newLocalMember.startTimeoutTimer();
 								} // else ignore
 							}
 							else {
 								// brand spanking new member - welcome
-								Member newLocalMember = new Member(remoteMember.getAddress(), remoteMember.getHeartbeat(), Client.this);
+								Member newLocalMember = new Member(remoteMember.getAddress(), remoteMember.getHeartbeat(), Client.this, t_cleanup);
 								Client.this.memberList.add(newLocalMember);
 								newLocalMember.startTimeoutTimer();
 							}
@@ -298,6 +347,11 @@ public class Client implements NotificationListener {
 		}
 	}
 
+	/**
+	 * Starts the client.  Specifically, start the various cycles for this protocol.
+	 * Start the gossip thread and start the receiver thread.
+	 * @throws InterruptedException
+	 */
 	private void start() throws InterruptedException {
 
 		// Start all timers except for me
@@ -319,6 +373,7 @@ public class Client implements NotificationListener {
 		// Potentially, you could kick off more threads here
 		//  that could perform additional data synching
 
+		// keep the main thread around
 		while(true) {
 			TimeUnit.SECONDS.sleep(10);
 		}

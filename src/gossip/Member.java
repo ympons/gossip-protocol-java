@@ -5,8 +5,6 @@ import java.net.InetSocketAddress;
 
 public class Member implements Serializable {
 
-	private static final int t_cleanup = 10000; // 10 seconds TODO: make configurable
-
 	private static final long serialVersionUID = 8387950590016941525L;
 
 	/**
@@ -19,7 +17,7 @@ public class Member implements Serializable {
 
 	private transient TimeoutTimer timeoutTimer;
 
-	public Member(String address, int heartbeat, Client client) {
+	public Member(String address, int heartbeat, Client client, int t_cleanup) {
 		this.address = address;
 		this.heartbeat = heartbeat;
 		this.timeoutTimer = new TimeoutTimer(t_cleanup, client, this);

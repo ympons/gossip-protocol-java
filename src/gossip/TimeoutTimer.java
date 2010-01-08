@@ -18,7 +18,6 @@ public class TimeoutTimer extends Timer {
 	 * @param millisecondsSleepTime The time for this timer to wait before an event.
 	 * @param client
 	 * @param member
-	 * @param listener The NotificationListener of where the timer event goes.
 	 */
 	public TimeoutTimer(long millisecondsSleepTime, Client client, Member member) {
 		super();
